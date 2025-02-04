@@ -1,191 +1,267 @@
-use bevy::{
-    math::bounding::{Aabb2d, BoundingVolume, IntersectsVolume},
-    prelude::*,
-    sprite::MaterialMesh2dBundle,
-};
+use std::f32::consts::TAU;
+
+use bevy::gltf::{GltfMesh, GltfNode};
+use bevy::prelude::*;
+use bevy::render::camera::Exposure;
+use bevy::window::CursorGrabMode;
+use bevy_fps_controller::controller::*;
+use bevy_inspector_egui::quick::WorldInspectorPlugin;
+use bevy_rapier3d::prelude::*;
+use iyes_perf_ui::prelude::*;
 
 fn main() {
     App::new()
-        .add_plugins(DefaultPlugins)
-        .insert_resource(ClearColor(Color::srgb(0.9, 0.9, 0.9)))
-        .add_systems(Startup, startup)
-        .add_systems(Update, (apply_velocity, apply_speed, move_player, collide))
+        .insert_resource(AmbientLight {
+            color: Color::WHITE,
+            brightness: 10000.0,
+        })
+        .insert_resource(ClearColor(Color::linear_rgb(0.83, 0.96, 0.96)))
+        .insert_resource(DebugMode(false))
+        .add_plugins((
+            DefaultPlugins
+                .set(AssetPlugin::default())
+                .set(WindowPlugin {
+                    primary_window: Some(Window {
+                        present_mode: bevy::window::PresentMode::Immediate,
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+            RapierPhysicsPlugin::<NoUserData>::default(),
+            FpsControllerPlugin,
+            // diagnostic
+            bevy::diagnostic::FrameTimeDiagnosticsPlugin,
+            bevy::diagnostic::EntityCountDiagnosticsPlugin,
+            bevy::diagnostic::SystemInformationDiagnosticsPlugin,
+            PerfUiPlugin,
+            WorldInspectorPlugin::new().run_if(|debug_mode: Res<DebugMode>| debug_mode.0),
+            RapierDebugRenderPlugin {
+                enabled: false,
+                ..Default::default()
+            },
+        ))
+        .add_systems(Startup, setup)
+        .add_systems(
+            Update,
+            (
+                cursor_grab_sys,
+                load_level,
+                toggle_noclip,
+                respawn,
+                change_level,
+                toggle_debug,
+            ),
+        )
         .run();
 }
 
-#[derive(Component)]
-struct Player;
-
-#[derive(Component, Default)]
-struct Velocity(Vec2);
-
-#[derive(Component, Default)]
-struct Speed(Vec2);
-
-#[derive(Component)]
-struct Collider;
-
-#[derive(Component)]
-struct Anchored;
-
-fn startup(
+fn setup(
     mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<ColorMaterial>>,
-    _asset_server: Res<AssetServer>,
+    // mut meshes: ResMut<Assets<Mesh>>,
+    // mut materials: ResMut<Assets<StandardMaterial>>,
+    ass: Res<AssetServer>,
 ) {
-    commands.spawn(Camera2dBundle::default());
+    commands.spawn(PerfUiDefaultEntries::default());
 
     commands.spawn((
-        Player,
-        Collider,
-        Speed::default(),
-        Velocity::default(),
-        MaterialMesh2dBundle {
-            mesh: meshes.add(Rectangle::new(1.0, 1.0)).into(),
-            material: materials.add(Color::srgb(1.0, 0.0, 0.0)),
-            transform: Transform {
-                translation: Vec3::new(0.0, 0.0, 1.0),
-                scale: Vec3::new(10.0, 10.0, 10.0),
-                ..Default::default()
-            },
+        DirectionalLight {
+            illuminance: light_consts::lux::FULL_DAYLIGHT,
+            shadows_enabled: true,
             ..Default::default()
         },
+        Transform::from_xyz(4.0, 7.0, 5.0).looking_at(Vec3::ZERO, Vec3::Y),
     ));
 
-    let cube_mesh = meshes.add(Rectangle::new(1.0, 1.0));
-    let cube_color = materials.add(Color::srgb(0.3, 0.3, 0.3));
-
-    // spawn randomly placed rectangles to collide with
-    for _ in 0..20 {
-        commands.spawn((
-            Collider,
-            Anchored,
-            MaterialMesh2dBundle {
-                mesh: cube_mesh.clone().into(),
-                material: cube_color.clone(),
-                transform: Transform {
-                    translation: Vec3::new(
-                        (rand::random::<f32>() - 0.5) * 800.0,
-                        (rand::random::<f32>() - 0.5) * 600.0,
-                        0.0,
-                    ),
-                    scale: Vec3::new(50.0, 50.0, 1.0),
-                    ..Default::default()
-                },
+    let logical_entity = commands
+        .spawn((
+            Collider::capsule_y(1.0, 0.5),
+            Friction {
+                coefficient: 0.0,
+                combine_rule: CoefficientCombineRule::Min,
+            },
+            Restitution {
+                coefficient: 0.0,
+                combine_rule: CoefficientCombineRule::Min,
+            },
+            ActiveEvents::COLLISION_EVENTS,
+            Velocity::zero(),
+            RigidBody::Dynamic,
+            Sleeping::disabled(),
+            LockedAxes::ROTATION_LOCKED,
+            AdditionalMassProperties::Mass(1.0),
+            GravityScale(0.0),
+            Ccd { enabled: true },
+            Transform::from_xyz(0.0, 12., 0.0),
+            LogicalPlayer,
+            FpsControllerInput {
+                pitch: -TAU / 12.0,
+                yaw: TAU * 5.0 / 8.0,
                 ..Default::default()
             },
-        ));
+            FpsController {
+                air_acceleration: 80.,
+                ..Default::default()
+            },
+        ))
+        .insert(CameraConfig {
+            height_offset: -0.5,
+        })
+        .id();
+
+    commands.spawn((
+        Camera3d::default(),
+        Projection::Perspective(PerspectiveProjection {
+            fov: TAU / 5.0,
+            ..Default::default()
+        }),
+        Exposure::SUNLIGHT,
+        RenderPlayer { logical_entity },
+    ));
+    // commands.spawn((Camera3d::default(), Transform::from_xyz(0.0, -25., 0.)));
+
+    // commands.spawn(SceneRoot(ass.load("scenes.glb#Scene0")));
+    let playground = ass.load("playground.glb");
+    let small = ass.load("small.glb");
+
+    commands.insert_resource(Scenes {
+        scenes: vec![small, playground],
+        current: 0,
+        current_loaded: false,
+    });
+}
+
+#[derive(Resource)]
+struct Scenes {
+    scenes: Vec<Handle<Gltf>>,
+    current: usize,
+    current_loaded: bool,
+}
+
+#[derive(Component)]
+struct CurrentScene;
+
+fn cursor_grab_sys(mut windows: Query<&mut Window>, key: Res<ButtonInput<KeyCode>>) {
+    let mut window = windows.single_mut();
+    if key.just_pressed(KeyCode::Escape) {
+        if window.cursor_options.visible {
+            window.cursor_options.grab_mode = CursorGrabMode::Locked;
+            window.cursor_options.visible = false;
+        } else {
+            window.cursor_options.grab_mode = CursorGrabMode::None;
+            window.cursor_options.visible = true;
+        }
     }
 }
 
-fn apply_speed(time: Res<Time>, mut query: Query<(&mut Transform, &Speed)>) {
-    for (mut transform, speed) in query.iter_mut() {
-        transform.translation.x += speed.0.x * time.delta_seconds();
-        transform.translation.y += speed.0.y * time.delta_seconds();
-    }
-}
-
-fn apply_velocity(mut query: Query<(&mut Speed, &Velocity)>) {
-    const FRICTION_COEFF: f32 = 0.85;
-    const MAX_SPEED: f32 = 500.0;
-    for (mut speed, velocity) in query.iter_mut() {
-        speed.0 = (speed.0 + velocity.0).clamp(Vec2::splat(-MAX_SPEED), Vec2::splat(MAX_SPEED));
-        speed.0 *= FRICTION_COEFF;
-    }
-}
-
-fn move_player(
-    keyboard_input: Res<ButtonInput<KeyCode>>,
-    mut query: Query<&mut Velocity, With<Player>>,
+fn load_level(
+    mut commands: Commands,
+    mut scenes: ResMut<Scenes>,
+    gltf_assets: Res<Assets<Gltf>>,
+    gltf_mesh_assets: Res<Assets<GltfMesh>>,
+    gltf_node_assets: Res<Assets<GltfNode>>,
+    mesh_assets: Res<Assets<Mesh>>,
+    mut player: Query<(&LogicalPlayer, &mut Transform, &mut Velocity)>,
 ) {
-    const ACCEL_AMOUNT: f32 = 50.0;
-    const ACCEL_AMOUNT_SLOW: f32 = 10.0;
-    let mut velocity = query.single_mut();
-
-    let mut direction_x = 0.0;
-    let mut direction_y = 0.0;
-
-    if keyboard_input.pressed(KeyCode::KeyW) {
-        direction_y += 1.0;
-    }
-    if keyboard_input.pressed(KeyCode::KeyS) {
-        direction_y -= 1.0;
-    }
-    if keyboard_input.pressed(KeyCode::KeyA) {
-        direction_x -= 1.0;
-    }
-    if keyboard_input.pressed(KeyCode::KeyD) {
-        direction_x += 1.0;
+    if scenes.current_loaded {
+        return;
     }
 
-    let accel_amount = if keyboard_input.pressed(KeyCode::ShiftLeft) {
-        ACCEL_AMOUNT_SLOW
-    } else {
-        ACCEL_AMOUNT
-    };
+    let gltf = gltf_assets.get(&scenes.scenes[scenes.current]);
 
-    velocity.0 = Vec2::new(direction_x, direction_y).clamp_length_max(1.0) * accel_amount;
+    if let Some(gltf) = gltf {
+        let scene = gltf.scenes.first().unwrap().clone();
+        commands.spawn((SceneRoot(scene), CurrentScene));
+
+        let (_, mut player_transform, mut player_velocity) = player.get_single_mut().unwrap();
+
+        for node in &gltf.nodes {
+            let node = gltf_node_assets.get(node).unwrap();
+
+            if node.name == "spawnpoint" {
+                player_transform.translation = node.transform.translation;
+                player_transform.rotation = node.transform.rotation;
+                player_velocity.linvel = Vec3::ZERO;
+                player_velocity.angvel = Vec3::ZERO;
+            }
+
+            if let Some(gltf_mesh) = node.mesh.clone() {
+                let gltf_mesh = gltf_mesh_assets.get(&gltf_mesh).unwrap();
+                for mesh_primitive in &gltf_mesh.primitives {
+                    let mesh = mesh_assets.get(&mesh_primitive.mesh).unwrap();
+                    commands.spawn((
+                        Collider::from_bevy_mesh(
+                            mesh,
+                            &ComputedColliderShape::TriMesh(TriMeshFlags::all()),
+                        )
+                        .unwrap(),
+                        RigidBody::Fixed,
+                        node.transform,
+                        CurrentScene,
+                    ));
+                }
+            }
+        }
+        scenes.current_loaded = true;
+    }
 }
 
-fn collide(
-    mut query: Query<(&mut Transform, Option<&Anchored>, Option<&mut Speed>), With<Collider>>,
+fn toggle_noclip(
+    mut query: Query<(Entity, &mut FpsControllerInput)>,
+    key: Res<ButtonInput<KeyCode>>,
 ) {
-    let mut combinations = query.iter_combinations_mut();
-    while let Some([(mut a, a_anchored, a_speed), (mut b, b_anchored, b_speed)]) =
-        combinations.fetch_next()
-    {
-        let a_bounding_box = Aabb2d::new(a.translation.truncate(), a.scale.truncate() / 2.);
-        let b_bounding_box = Aabb2d::new(b.translation.truncate(), b.scale.truncate() / 2.);
+    if key.pressed(KeyCode::AltLeft) {
+        let (_, mut controller_input) = query.get_single_mut().unwrap();
+        controller_input.fly = true;
+    }
+}
 
-        if !a_bounding_box.intersects(&b_bounding_box) {
-            // no collision
+fn respawn(mut query: Query<(&mut Transform, &mut Velocity)>) {
+    for (mut transform, mut velocity) in &mut query {
+        if transform.translation.y > -50.0 {
             continue;
         }
 
-        if a_anchored.is_some() && b_anchored.is_some() {
-            // both are anchored, ignore collision
-            continue;
+        velocity.linvel = Vec3::ZERO;
+        transform.translation = Vec3::new(0.0, 12.0, 0.0);
+    }
+}
+
+fn change_level(
+    mut scenes: ResMut<Scenes>,
+    key: Res<ButtonInput<KeyCode>>,
+    query: Query<Entity, With<CurrentScene>>,
+    mut commands: Commands,
+) {
+    if !scenes.current_loaded {
+        return;
+    }
+
+    if key.just_pressed(KeyCode::KeyN) {
+        scenes.current += 1;
+        if scenes.current == scenes.scenes.len() {
+            scenes.current = 0;
         }
+        scenes.current_loaded = false;
 
-        // calculate the offset to move the colliders apart
-        let a_closest = a_bounding_box.closest_point(b_bounding_box.center());
-        let b_closest = b_bounding_box.closest_point(a_bounding_box.center());
-
-        let offset = a_closest - b_closest; // this is naive, because it always moves to the edge of the bounding box
-
-        // move the colliders apart
-        if a_anchored.is_none() && b_anchored.is_none() {
-            let offset = offset / 2.0;
-            a.translation -= offset.extend(0.0);
-            b.translation += offset.extend(0.0);
-
-            if a_speed.is_some() && b_speed.is_some() {
-                let mut a_speed = a_speed.unwrap();
-                let mut b_speed = b_speed.unwrap();
-
-                let relative_speed = a_speed.0 - b_speed.0;
-                let normal = offset.normalize();
-                let impulse = relative_speed.dot(normal) * normal;
-                a_speed.0 -= impulse;
-                b_speed.0 += impulse;
-            }
-        } else if a_anchored.is_some() && b_anchored.is_none() {
-            b.translation += offset.extend(0.0);
-
-            if let Some(mut b_speed) = b_speed {
-                let normal = offset.normalize();
-                let impulse = b_speed.0.dot(normal) * normal;
-                b_speed.0 -= impulse;
-            }
-        } else if a_anchored.is_none() && b_anchored.is_some() {
-            a.translation -= offset.extend(0.0);
-
-            if let Some(mut a_speed) = a_speed {
-                let normal = offset.normalize();
-                let impulse = a_speed.0.dot(normal) * normal;
-                a_speed.0 -= impulse;
-            }
+        for e in query.iter() {
+            commands.entity(e).despawn_recursive();
         }
     }
+}
+
+#[derive(Resource)]
+struct DebugMode(bool);
+
+fn toggle_debug(
+    key: Res<ButtonInput<KeyCode>>,
+    mut debug_mode: ResMut<DebugMode>,
+    mut debug_rendering: ResMut<DebugRenderContext>,
+) {
+    if !key.just_pressed(KeyCode::KeyP) {
+        return;
+    }
+
+    debug_mode.0 = !debug_mode.0;
+
+    debug_rendering.enabled = debug_mode.0;
 }

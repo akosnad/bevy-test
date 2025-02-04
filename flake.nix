@@ -1,10 +1,19 @@
 {
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
-    flake-parts.url = "github:hercules-ci/flake-parts";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    flake-parts = {
+      url = "github:hercules-ci/flake-parts";
+      inputs.nixpkgs-lib.follows = "nixpkgs";
+    };
 
-    naersk.url = "github:nix-community/naersk";
-    treefmt-nix.url = "github:numtide/treefmt-nix";
+    naersk = {
+      url = "github:nix-community/naersk";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+    treefmt-nix = {
+      url = "github:numtide/treefmt-nix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs = inputs:
@@ -44,6 +53,7 @@
             programs = {
               nixpkgs-fmt.enable = true;
               rustfmt.enable = true;
+              taplo.enable = true;
             };
           };
 
@@ -53,7 +63,10 @@
           };
 
           devShells.default = pkgs.mkShell {
-            inherit buildInputs nativeBuildInputs LD_LIBRARY_PATH;
+            inherit buildInputs LD_LIBRARY_PATH;
+            nativeBuildInputs = nativeBuildInputs ++ (with pkgs; [
+              rustfmt
+            ]);
           };
 
           checks.default = self'.packages.default;
