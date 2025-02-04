@@ -14,6 +14,10 @@
       url = "github:numtide/treefmt-nix";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    fenix = {
+      url = "github:nix-community/fenix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs = inputs:
@@ -44,6 +48,18 @@
           LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath buildInputs;
 
           naersk = pkgs.callPackage inputs.naersk { };
+
+          xwin-toolchan = with inputs.fenix.packages.${system}; combine [
+            minimal.cargo
+            minimal.rustc
+            targets."x86_64-pc-windows-msvc".latest.rust-std
+          ];
+          xwin-buildInputs = with pkgs; [
+            xwin-toolchan
+            clippy
+            pkg-config
+            cargo-xwin
+          ];
         in
         {
           _module.args.pkgs = import inputs.nixpkgs { inherit system; };
@@ -67,6 +83,11 @@
             nativeBuildInputs = nativeBuildInputs ++ (with pkgs; [
               rustfmt
             ]);
+          };
+
+          devShells.xwin = pkgs.mkShell {
+            buildInputs = xwin-buildInputs;
+            LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath xwin-buildInputs;
           };
 
           checks.default = self'.packages.default;
