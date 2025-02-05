@@ -452,6 +452,7 @@ dependencies = [
  "bevy-inspector-egui",
  "bevy_fps_controller",
  "bevy_rapier3d",
+ "blenvy",
  "iyes_perf_ui",
  "iyes_progress",
  "log",
@@ -605,6 +606,19 @@ dependencies = [
  "encase",
  "serde",
  "wgpu-types",
+]
+
+[[package]]
+name = "bevy_common_assets"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3521990269672c442f2bf0fbed0fce9db719e3dd136dd4012a97809464a4389d"
+dependencies = [
+ "anyhow",
+ "bevy",
+ "ron",
+ "serde",
+ "thiserror",
 ]
 
 [[package]]
@@ -1548,6 +1562,18 @@ dependencies = [
  "cc",
  "cfg-if",
  "constant_time_eq",
+]
+
+[[package]]
+name = "blenvy"
+version = "0.1.0-alpha.2"
+source = "git+https://github.com/ptsd/Blenvy?branch=blenvy-bevy-0.15#998990e4afb1674d1ab9b8f5bb8a14aea19d79c5"
+dependencies = [
+ "bevy",
+ "bevy_common_assets",
+ "ron",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
