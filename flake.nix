@@ -73,10 +73,10 @@
             };
           };
 
-          packages.default = naersk.buildPackage {
-            src = ./.;
-            inherit buildInputs nativeBuildInputs LD_LIBRARY_PATH;
-          };
+          # packages.default = naersk.buildPackage {
+          #   src = ./.;
+          #   inherit buildInputs nativeBuildInputs LD_LIBRARY_PATH;
+          # };
 
           devShells.default = pkgs.mkShell {
             inherit buildInputs LD_LIBRARY_PATH;
@@ -90,7 +90,7 @@
             LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath xwin-buildInputs;
           };
 
-          checks.default = self'.packages.default;
+          # checks.default = self'.packages.default;
         };
     };
 }

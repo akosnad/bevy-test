@@ -1,9 +1,6 @@
 [workspace]
 resolver = "2"
-members = [
-  "native-client",
-  "server"
-]
+members = ["native-client", "server"]
 # Enable a small amount of optimization in the dev profile.
 [profile.dev]
 opt-level = 1
@@ -19,4 +16,3 @@ lto = "thin"
 
 [profile.release.package."*"]
 opt-level = 3
-
