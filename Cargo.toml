@@ -1,9 +1,9 @@
-[package]
-name = "bevy-test"
-version = "0.1.0"
-edition = "2021"
-authors = ["akosnad"]
-
+[workspace]
+resolver = "2"
+members = [
+  "native-client",
+  "server"
+]
 # Enable a small amount of optimization in the dev profile.
 [profile.dev]
 opt-level = 1
@@ -15,18 +15,8 @@ opt-level = 3
 [profile.release]
 codegen-units = 1
 opt-level = 3
+lto = "thin"
 
 [profile.release.package."*"]
 opt-level = 3
 
-[dependencies]
-bevy = { version = "0.15", features = ["bevy_remote", "file_watcher", "jpeg"] }
-bevy-inspector-egui = "0.29.1"
-bevy_fps_controller = "0.15.0"
-bevy_rapier3d = "0.28.0"
-blenvy = { git = "https://github.com/ptsd/Blenvy", branch = "blenvy-bevy-0.15", version = "0.1.0-alpha.2" }
-iyes_perf_ui = { git = "https://github.com/IyesGames/iyes_perf_ui", rev = "d8f3cbb", version = "0.4.0-rc.1" }
-iyes_progress = { version = "0.13.1", features = ["assets"] }
-log = "0.4.25"
-serde = { version = "1.0.217", features = ["derive"] }
-serde_json = "1.0.138"
