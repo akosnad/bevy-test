@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::f32::consts::TAU;
+use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 
 use bevy::prelude::*;
 use bevy::render::camera::Exposure;
@@ -10,19 +11,22 @@ use bevy_inspector_egui::quick::WorldInspectorPlugin;
 use bevy_rapier3d::prelude::*;
 use blenvy::*;
 use iyes_perf_ui::prelude::*;
+use lightyear::client::input::native::InputSystemSet;
+use lightyear::prelude::{client::*, *};
 
-fn main() {
-    App::new()
-        .register_type::<ColliderInitialShape>()
-        .register_type::<ColliderInitialProperties>()
-        .register_type::<Spawnpoint>()
-        .insert_resource(AmbientLight {
+use crate::protocol::*;
+use crate::shared::shared_config;
+
+pub struct ClientPlugin;
+impl Plugin for ClientPlugin {
+    fn build(&self, app: &mut App) {
+        app.insert_resource(AmbientLight {
             color: Color::WHITE,
             brightness: 10000.0,
         })
         .insert_resource(ClearColor(Color::linear_rgb(0.83, 0.96, 0.96)))
-        .insert_resource(DebugMode(false))
-        .add_plugins((
+        .insert_resource(DebugMode(false));
+        app.add_plugins((
             DefaultPlugins
                 .set(AssetPlugin::default())
                 .set(WindowPlugin {
@@ -32,9 +36,13 @@ fn main() {
                     }),
                     ..Default::default()
                 }),
-            RapierPhysicsPlugin::<NoUserData>::default(),
+            NetClient {
+                server_addr: std::net::SocketAddr::V4(SocketAddrV4::new(
+                    Ipv4Addr::new(127, 0, 0, 1),
+                    9393,
+                )),
+            },
             FpsControllerPlugin,
-            BlenvyPlugin::default(),
             // diagnostic
             bevy::diagnostic::FrameTimeDiagnosticsPlugin,
             bevy::diagnostic::EntityCountDiagnosticsPlugin,
@@ -52,12 +60,11 @@ fn main() {
             (
                 cursor_grab_sys,
                 toggle_noclip,
-                respawn,
                 toggle_debug,
-                create_colliders,
+                character_spawned,
             ),
-        )
-        .run();
+        );
+    }
 }
 
 fn setup(
@@ -139,6 +146,8 @@ fn setup(
         HideUntilReady,
         GameWorldTag,
     ));
+
+    commands.connect_client();
 }
 
 fn cursor_grab_sys(mut windows: Query<&mut Window>, key: Res<ButtonInput<KeyCode>>) {
@@ -164,28 +173,6 @@ fn toggle_noclip(
     }
 }
 
-#[derive(Component, Reflect, Default)]
-#[reflect(Component)]
-struct Spawnpoint;
-
-fn respawn(
-    spawn: Query<&Transform, With<Spawnpoint>>,
-    mut players: Query<(&mut Transform, &mut Velocity), (With<LogicalPlayer>, Without<Spawnpoint>)>,
-) {
-    let Ok(spawn_transform) = spawn.get_single() else {
-        return;
-    };
-
-    for (mut transform, mut velocity) in &mut players {
-        if transform.translation.y > -50.0 {
-            continue;
-        }
-
-        velocity.linvel = Vec3::ZERO;
-        transform.translation = spawn_transform.translation;
-    }
-}
-
 #[derive(Resource)]
 struct DebugMode(bool);
 
@@ -203,104 +190,96 @@ fn toggle_debug(
     debug_rendering.enabled = debug_mode.0;
 }
 
-#[derive(Reflect)]
-#[reflect(Default)]
-struct ColliderCuboidShape {
-    hx: f32,
-    hy: f32,
-    hz: f32,
-}
-impl Default for ColliderCuboidShape {
-    fn default() -> Self {
-        Self {
-            hx: 1.0,
-            hy: 1.0,
-            hz: 1.0,
-        }
-    }
-}
-
-#[derive(Reflect, Default)]
-enum ColliderInitialShape {
-    #[default]
-    ComputedTriMesh,
-    Cuboid(ColliderCuboidShape),
-    Ball(f32),
-}
-
-#[derive(Component, Reflect)]
-#[reflect(Component)]
-#[reflect(Default)]
-struct ColliderInitialProperties {
-    shape: ColliderInitialShape,
-    mass: Option<f32>,
-    fixed: bool,
-    friction: f32,
-    restitution: f32,
-}
-impl Default for ColliderInitialProperties {
-    fn default() -> Self {
-        Self {
-            shape: Default::default(),
-            mass: None,
-            fixed: true,
-            friction: 0.7,
-            restitution: 0.3,
-        }
-    }
-}
-
-fn create_colliders(
-    mut query: Query<(Entity, &ColliderInitialProperties, &Mesh3d)>,
+fn character_spawned(
+    mut spawn_reader: EventReader<EntitySpawnEvent>,
     mut commands: Commands,
-    meshes: Res<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut meshes: ResMut<Assets<Mesh>>,
 ) {
-    for (ent, props, mesh) in query.iter_mut() {
-        let mut e = commands.entity(ent);
-
-        if props.fixed {
-            e.insert((RigidBody::Fixed, ActiveCollisionTypes::all()));
-        } else {
-            e.insert(RigidBody::Dynamic);
-        };
-
-        match props.mass {
-            Some(mass) => e.insert(ColliderMassProperties::Mass(mass)),
-            // fall back to computed
-            None => e.insert(ColliderMassProperties::default()),
-        };
-
-        match props.shape {
-            ColliderInitialShape::Ball(radius) => {
-                e.insert(Collider::ball(radius));
-            }
-            ColliderInitialShape::Cuboid(ColliderCuboidShape { hx, hy, hz }) => {
-                e.insert(Collider::cuboid(hx, hy, hz));
-            }
-            ColliderInitialShape::ComputedTriMesh => {
-                let mesh = meshes.get(mesh).unwrap();
-                if let Some(collider) = Collider::from_bevy_mesh(
-                    mesh,
-                    &ComputedColliderShape::TriMesh(TriMeshFlags::all()),
-                ) {
-                    e.insert(collider);
-                } else {
-                    log::error!("Failed to create trimesh collider for entity {:?}", ent);
-                }
-            }
-        };
+    for spawn in spawn_reader.read() {
+        let mut e = commands.entity(spawn.entity());
 
         e.insert((
-            Friction {
-                coefficient: props.friction,
-                combine_rule: CoefficientCombineRule::Min,
-            },
-            Restitution {
-                coefficient: props.restitution,
-                combine_rule: CoefficientCombineRule::Min,
-            },
+            Mesh3d(meshes.add(Cuboid::default())),
+            MeshMaterial3d(materials.add(StandardMaterial {
+                base_color: Color::srgb(1.0, 0.0, 0.0),
+                ..Default::default()
+            })),
         ));
-
-        e.remove::<ColliderInitialProperties>();
     }
+}
+
+fn net_config(addr: SocketAddr) -> NetConfig {
+    use rand::prelude::*;
+    let random_id = rand::rng().random::<u64>();
+
+    NetConfig::Netcode {
+        auth: Authentication::Manual {
+            server_addr: addr,
+            client_id: random_id,
+            private_key: [
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0,
+            ],
+            protocol_id: 0,
+        },
+        config: NetcodeConfig {
+            token_expire_secs: -1,
+            ..Default::default()
+        },
+        io: Default::default(),
+    }
+}
+
+pub struct NetClient {
+    pub server_addr: SocketAddr,
+}
+
+impl Plugin for NetClient {
+    fn build(&self, app: &mut App) {
+        let client_config = ClientConfig {
+            shared: shared_config(Mode::Separate),
+            net: net_config(self.server_addr),
+            ..Default::default()
+        };
+        let client_plugins = ClientPlugins::new(client_config);
+
+        app.add_plugins(client_plugins);
+
+        app.add_systems(
+            FixedPreUpdate,
+            buffer_input.in_set(InputSystemSet::BufferInputs),
+        );
+    }
+}
+
+fn buffer_input(
+    tick_manager: Res<TickManager>,
+    mut input_manager: ResMut<InputManager<PlayerInputs>>,
+    keypress: Res<ButtonInput<KeyCode>>,
+) {
+    let tick = tick_manager.tick();
+    let mut input = PlayerInputs::default();
+
+    // TODO: don't hardcode keys
+    // could use leafwing-input-manager
+    if keypress.pressed(KeyCode::KeyW) {
+        input.forward = true;
+    }
+    if keypress.pressed(KeyCode::KeyS) {
+        input.backward = true;
+    }
+    if keypress.pressed(KeyCode::KeyA) {
+        input.left = true;
+    }
+    if keypress.pressed(KeyCode::KeyD) {
+        input.right = true;
+    }
+    if keypress.pressed(KeyCode::Space) {
+        input.jump = true;
+    }
+    if keypress.pressed(KeyCode::ControlLeft) {
+        input.crouch = true;
+    }
+    input_manager.add_input(input, tick);
 }
