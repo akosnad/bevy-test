@@ -1,11 +1,13 @@
+use avian3d::prelude::*;
 use bevy::prelude::*;
-use bevy_fps_controller::controller::LogicalPlayer;
-use bevy_rapier3d::prelude::*;
 use blenvy::BlenvyPlugin;
+use leafwing_input_manager::prelude::*;
+use lightyear::prelude::client::*;
+use lightyear::prelude::server::ReplicationTarget;
 use lightyear::prelude::*;
 use std::time::Duration;
 
-use crate::protocol::ProtocolPlugin;
+use crate::protocol::{PlayerActions, PlayerId, ProtocolPlugin};
 
 pub fn shared_config(mode: Mode) -> SharedConfig {
     SharedConfig {
@@ -17,13 +19,43 @@ pub fn shared_config(mode: Mode) -> SharedConfig {
     }
 }
 
+pub fn shared_player_movement(mut transform: Mut<Transform>, action: &ActionState<PlayerActions>) {
+    const PLAYER_RUN_SPEED: f32 = 0.2;
+
+    // TODO: handle panning camera
+    // let Some(look_data) = action.dual_axis_data(&PlayerActions::Look) else {
+    //     return;
+    // };
+    let Some(run_data) = action.dual_axis_data(&PlayerActions::Run) else {
+        return;
+    };
+
+    // TODO
+    transform.translation.x += PLAYER_RUN_SPEED * run_data.pair.x;
+    transform.translation.z += PLAYER_RUN_SPEED * run_data.pair.y;
+}
+
+fn player_movement(
+    mut player_query: Query<
+        (&mut Transform, &ActionState<PlayerActions>),
+        Or<(With<Predicted>, With<ReplicationTarget>)>,
+    >,
+) {
+    for (transform, action_state) in player_query.iter_mut() {
+        shared_player_movement(transform, action_state);
+    }
+}
+
 #[derive(Component, Reflect, Default)]
 #[reflect(Component)]
 pub struct Spawnpoint;
 
 fn respawn(
     spawn: Query<&Transform, With<Spawnpoint>>,
-    mut players: Query<(&mut Transform, &mut Velocity), (With<LogicalPlayer>, Without<Spawnpoint>)>,
+    mut players: Query<
+        (&mut Transform, &mut LinearVelocity),
+        (With<PlayerId>, Without<Spawnpoint>),
+    >,
 ) {
     let Ok(spawn_transform) = spawn.get_single() else {
         return;
@@ -34,7 +66,8 @@ fn respawn(
             continue;
         }
 
-        velocity.linvel = Vec3::ZERO;
+        let mut zero_vel = LinearVelocity::ZERO;
+        std::mem::swap(&mut zero_vel, &mut *velocity);
         transform.translation = spawn_transform.translation;
     }
 }
@@ -95,30 +128,25 @@ fn create_colliders(
         let mut e = commands.entity(ent);
 
         if props.fixed {
-            e.insert((RigidBody::Fixed, ActiveCollisionTypes::all()));
+            e.insert(RigidBody::Static);
         } else {
             e.insert(RigidBody::Dynamic);
-        };
+        }
 
-        match props.mass {
-            Some(mass) => e.insert(ColliderMassProperties::Mass(mass)),
-            // fall back to computed
-            None => e.insert(ColliderMassProperties::default()),
-        };
+        if let Some(mass) = props.mass {
+            e.insert(Mass(mass));
+        }
 
         match props.shape {
-            ColliderInitialShape::Ball(radius) => {
-                e.insert(Collider::ball(radius));
-            }
             ColliderInitialShape::Cuboid(ColliderCuboidShape { hx, hy, hz }) => {
-                e.insert(Collider::cuboid(hx, hy, hz));
+                e.insert(Collider::cuboid(hx * 2., hy * 2., hz * 2.));
+            }
+            ColliderInitialShape::Ball(r) => {
+                e.insert(Collider::sphere(r));
             }
             ColliderInitialShape::ComputedTriMesh => {
                 let mesh = meshes.get(mesh).unwrap();
-                if let Some(collider) = Collider::from_bevy_mesh(
-                    mesh,
-                    &ComputedColliderShape::TriMesh(TriMeshFlags::all()),
-                ) {
+                if let Some(collider) = Collider::trimesh_from_mesh(mesh) {
                     e.insert(collider);
                 } else {
                     log::error!("Failed to create trimesh collider for entity {:?}", ent);
@@ -127,18 +155,44 @@ fn create_colliders(
         };
 
         e.insert((
-            Friction {
-                coefficient: props.friction,
-                combine_rule: CoefficientCombineRule::Min,
-            },
-            Restitution {
-                coefficient: props.restitution,
-                combine_rule: CoefficientCombineRule::Min,
-            },
+            Friction::new(props.friction),
+            Restitution::new(props.restitution),
         ));
 
         e.remove::<ColliderInitialProperties>();
     }
+}
+
+fn setup(mut commands: Commands) {
+    use blenvy::*;
+
+    commands.spawn(iyes_perf_ui::prelude::PerfUiDefaultEntries::default());
+
+    commands.spawn((
+        DirectionalLight {
+            illuminance: light_consts::lux::FULL_DAYLIGHT,
+            shadows_enabled: true,
+            ..Default::default()
+        },
+        Transform::from_xyz(4.0, 7.0, 5.0).looking_at(Vec3::ZERO, Vec3::Y),
+    ));
+
+    commands.spawn((
+        Camera3d::default(),
+        Transform::from_xyz(12.0, 4.0, 15.0).looking_at(Vec3::ZERO, Vec3::Y),
+        Projection::Perspective(PerspectiveProjection {
+            fov: std::f32::consts::TAU / 5.0,
+            ..Default::default()
+        }),
+        bevy::render::camera::Exposure::SUNLIGHT,
+    ));
+
+    commands.spawn((
+        BlueprintInfo::from_path("levels/playground.glb"),
+        SpawnBlueprint,
+        HideUntilReady,
+        GameWorldTag,
+    ));
 }
 
 pub struct SharedPlugin;
@@ -147,12 +201,28 @@ impl Plugin for SharedPlugin {
     fn build(&self, app: &mut App) {
         app.register_type::<ColliderInitialShape>()
             .register_type::<ColliderInitialProperties>()
-            .register_type::<Spawnpoint>()
-            .add_plugins((
-                ProtocolPlugin,
-                RapierPhysicsPlugin::<NoUserData>::default(),
-                BlenvyPlugin::default(),
-            ))
-            .add_systems(Update, (respawn, create_colliders));
+            .register_type::<ColliderCuboidShape>()
+            .register_type::<Spawnpoint>();
+        app.add_plugins((
+            ProtocolPlugin,
+            PhysicsPlugins::default(),
+            BlenvyPlugin::default(),
+            // diagnostic
+            bevy::diagnostic::FrameTimeDiagnosticsPlugin,
+            bevy::diagnostic::EntityCountDiagnosticsPlugin,
+            bevy::diagnostic::SystemInformationDiagnosticsPlugin,
+            iyes_perf_ui::PerfUiPlugin,
+            bevy_inspector_egui::quick::WorldInspectorPlugin::new(),
+            PhysicsDebugPlugin::default(),
+        ));
+
+        app.insert_resource(AmbientLight {
+            color: Color::WHITE,
+            brightness: 10000.0,
+        });
+        app.insert_resource(ClearColor(Color::linear_rgb(0.83, 0.96, 0.96)));
+
+        app.add_systems(FixedUpdate, (respawn, create_colliders, player_movement));
+        app.add_systems(Startup, setup);
     }
 }
